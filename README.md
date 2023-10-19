@@ -19,7 +19,7 @@ If you use DeepSeeColor in your work, please cite it as follows:
 
 An `environment.yaml` file is provided for conda installations, which can be configured by running
 ```bash
-conda env create -f environment.yaml
+conda env create -f environment.yaml  # Tested on Ubuntu 20.04
 ```
 
 ## Usage
