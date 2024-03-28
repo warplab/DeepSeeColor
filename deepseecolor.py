@@ -20,16 +20,17 @@ except:
     trange = range
 
 class paired_rgb_depth_dataset(Dataset):
-    def __init__(self, image_path, depth_path, openni_depth, mask_max_depth, image_height, image_width):
+    def __init__(self, image_path, depth_path, openni_depth, mask_max_depth, image_height, image_width, device):
         self.image_dir = image_path
         self.depth_dir = depth_path
         self.image_files = sorted(os.listdir(image_path))
         self.depth_files = sorted(os.listdir(depth_path))
+        self.device = device
         self.openni_depth = openni_depth
         self.mask_max_depth = mask_max_depth
         self.crop = (0, 0, image_height, image_width)
         self.depth_perc = 0.0001
-        self.kernel = torch.ones(3, 3).cuda()
+        self.kernel = torch.ones(3, 3).to(device=device)
         self.image_transforms = transforms.Compose([
             transforms.Resize((self.crop[2], self.crop[3]), transforms.InterpolationMode.BILINEAR, antialias=True),
             transforms.PILToTensor(),
@@ -44,7 +45,7 @@ class paired_rgb_depth_dataset(Dataset):
         image = Image.open(os.path.join(self.image_dir, fname))
         depth_fname = self.depth_files[index]
         depth = Image.open(os.path.join(self.depth_dir, depth_fname))
-        depth_transformed: torch.Tensor = self.image_transforms(depth).float().cuda()
+        depth_transformed: torch.Tensor = self.image_transforms(depth).float().to(device=self.device)
         if self.openni_depth:
             depth_transformed = depth_transformed / 1000.
         if self.mask_max_depth:
@@ -53,7 +54,7 @@ class paired_rgb_depth_dataset(Dataset):
                                                                                              1. - self.depth_perc)
         depth_transformed[(depth_transformed < low) | (depth_transformed > high)] = 0.
         depth_transformed = torch.squeeze(morph.closing(torch.unsqueeze(depth_transformed, dim=0), self.kernel), dim=0)
-        left_transformed: torch.Tensor = self.image_transforms(image).cuda() / 255.
+        left_transformed: torch.Tensor = self.image_transforms(image).to(device=self.device) / 255.
         return left_transformed, depth_transformed, [fname]
 
 
@@ -152,15 +153,15 @@ def main(args):
     torch.autograd.set_detect_anomaly(True)
 
     train_dataset = paired_rgb_depth_dataset(args.images, args.depth, args.depth_16u, args.mask_max_depth, args.height,
-                                             args.width)
+                                             args.width, args.device)
     save_dir = args.output
     os.makedirs(save_dir, exist_ok=True)
     target_batch_size = args.batch_size
     dataloader = DataLoader(train_dataset, batch_size=target_batch_size, shuffle=False)
-    bs_model = BackscatterNet().cuda()
-    da_model = DeattenuateNet().cuda()
-    bs_criterion = BackscatterLoss().cuda()
-    da_criterion = DeattenuateLoss().cuda()
+    bs_model = BackscatterNet().to(device=args.device)
+    da_model = DeattenuateNet().to(device=args.device)
+    bs_criterion = BackscatterLoss().to(device=args.device)
+    da_criterion = DeattenuateLoss().to(device=args.device)
     bs_optimizer = torch.optim.Adam(bs_model.parameters(), lr=args.init_lr)
     da_optimizer = torch.optim.Adam(da_model.parameters(), lr=args.init_lr)
     skip_right = True
@@ -186,7 +187,7 @@ def main(args):
         direct_z = (direct - direct_mean) / direct_std
         clamped_z = torch.clamp(direct_z, -5, 5)
         direct_no_grad = torch.clamp(
-            (clamped_z * direct_std) + torch.maximum(direct_mean, torch.Tensor([1. / 255]).cuda()), 0, 1).detach()
+            (clamped_z * direct_std) + torch.maximum(direct_mean, torch.Tensor([1. / 255]).to(device=args.device)), 0, 1).detach()
         for iter in trange(args.init_iters if j == 0 else args.iters):  # Run first batch for 500 iters, rest for 50
             start = time()
             f, J = da_model(direct_no_grad, depth)
@@ -237,6 +238,7 @@ if __name__ == '__main__':
     parser.add_argument('--init_iters', type=int, default=500, help='How many iterations to refine the first image batch (should be >= iters)')
     parser.add_argument('--iters', type=int, default=50, help='How many iterations to refine each image batch')
     parser.add_argument('--init_lr', type=float, default=1e-2, help='Initial learning rate for Adam optimizer')
+    parser.add_argument('--device', type=str, default='cuda:0' if torch.cuda.is_available() else 'cpu')
 
     args = parser.parse_args()
     main(args)
